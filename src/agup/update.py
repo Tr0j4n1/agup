@@ -12,6 +12,15 @@ import tempfile
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+from .desktop import install_desktop_entry
+from .migrate import (
+    describe,
+    find_predecessor,
+    migrate,
+    profile_for,
+    read_app_name,
+    read_data_folder_name,
+)
 from .endpoints import ConfigError, Endpoints
 from .fetch import FetchError, ProgressBar, download, get_json
 from .install import (
@@ -60,6 +69,9 @@ class Options:
     strict: bool = False
     pin_store: Optional[PinStore] = None
     link: bool = True
+    desktop: bool = True
+    migrate_profile: bool = False
+    migrate_extensions: bool = False
     show_progress: Optional[bool] = None
 
     def store(self) -> PinStore:
@@ -137,6 +149,28 @@ def _preflight(
     return None
 
 
+def _find_executable(install_dir: str, component: str) -> Optional[str]:
+    """Locate the launcher inside an installed bundle.
+
+    Release tarballs and distro packages disagree on the binary name -- the
+    Debian package ships ``antigravity`` where the tarball ships
+    ``antigravity-ide`` -- so several names are tried before giving up.
+    """
+    names = (
+        ["antigravity-ide", "antigravity"]
+        if component == "ide"
+        else ["antigravity", "antigravity-hub"]
+    )
+    for name in names:
+        for candidate in (
+            os.path.join(install_dir, name),
+            os.path.join(install_dir, "bin", name),
+        ):
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+    return None
+
+
 def update_bundle(
     component: str,
     endpoints: Endpoints,
@@ -211,16 +245,75 @@ def update_bundle(
         except InstallError as err:
             return Outcome.failed(component, str(err))
 
-    if options.link:
-        binary = os.path.join(target, "antigravity" if component == "hub" else "antigravity-ide")
-        link_name = "antigravity" if component == "hub" else "antigravity-ide"
-        if os.path.exists(binary):
+    binary = _find_executable(target, component)
+    if binary is None:
+        report(f"  warning: no launcher binary found under {target}")
+    else:
+        if options.link:
+            link_name = "antigravity" if component == "hub" else "antigravity-ide"
             try:
                 link_command(binary, os.path.join(paths.bin_dir, link_name))
             except InstallError as err:
                 report(f"  warning: {err}")
 
+        if options.desktop:
+            entry = install_desktop_entry(
+                component, target, binary, scope=options.scope, version=latest.version
+            )
+            if entry:
+                report(f"  menu entry: {entry}")
+            else:
+                report("  warning: could not write a desktop entry")
+
+    _check_profile(component, target, installed, latest.version, options, report)
+
     return Outcome.updated(component, installed, latest.version)
+
+
+def _check_profile(
+    component: str,
+    install_dir: str,
+    previous_version: str,
+    new_version: str,
+    options: Options,
+    report: Reporter,
+) -> None:
+    """Warn when the new build uses a different data folder, and optionally migrate.
+
+    A renamed data folder makes a new version look, on first launch, like every
+    setting and conversation has been lost -- while the old profile sits intact
+    under its old name. Saying so at install time costs one line; discovering it
+    afterwards costs an afternoon.
+    """
+    folder = read_data_folder_name(install_dir)
+    app_name = read_app_name(install_dir)
+    if not folder or not app_name:
+        return
+
+    previous = find_predecessor(folder, app_name)
+    if previous is None:
+        return
+
+    destination = profile_for(folder, app_name)
+    report(f"  note: {new_version} uses a new profile directory ({folder}).")
+    report(f"        Your previous data is still at {describe(previous)}")
+
+    if not options.migrate_profile:
+        report("        Nothing was copied. Re-run with --migrate-profile to carry it across.")
+        return
+
+    report("  migrating previous profile...")
+    moved = migrate(
+        previous,
+        destination,
+        include_extensions=options.migrate_extensions,
+        backup=True,
+    )
+    report(
+        f"  migrated {moved['config_files']} settings/history files"
+        + (f" and {moved['data_files']} extension files" if options.migrate_extensions else "")
+    )
+    report(f"        original left untouched at {previous.config_dir}")
 
 
 def update_cli(endpoints: Endpoints, options: Options, report: Reporter) -> Outcome:

@@ -70,6 +70,19 @@ def build_parser() -> argparse.ArgumentParser:
     behaviour.add_argument("--force", action="store_true", help="ignore version and process checks")
     behaviour.add_argument("--no-link", action="store_true", help="skip creating command symlinks")
     behaviour.add_argument(
+        "--no-desktop", action="store_true", help="skip installing application menu entries"
+    )
+    behaviour.add_argument(
+        "--migrate-profile",
+        action="store_true",
+        help="copy settings and history from a previous profile if the data folder changed",
+    )
+    behaviour.add_argument(
+        "--migrate-extensions",
+        action="store_true",
+        help="with --migrate-profile, also copy extensions (large, and re-downloadable)",
+    )
+    behaviour.add_argument(
         "--progress",
         choices=("auto", "always", "never"),
         default="auto",
@@ -203,6 +216,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         strict=args.strict,
         pin_store=store,
         link=not args.no_link,
+        desktop=not args.no_desktop,
+        migrate_profile=args.migrate_profile,
+        migrate_extensions=args.migrate_extensions,
     )
 
     report(f"agup {__version__} — scope {args.scope}" + (" — dry run" if args.dry_run else ""))

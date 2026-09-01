@@ -157,6 +157,102 @@ check("absent path = 0.0.0", t_missing)
 check("product identity read", t_identity)
 check("path override applies to one component only", t_override)
 
+print("desktop entries")
+import tempfile as _t2, os as _o2
+from agup.desktop import (render_entry, install_desktop_entry, remove_desktop_entry,
+                          find_icon, DesktopTarget)
+import struct as _st, zlib as _zl
+def _png(w,h):
+    ihdr=_st.pack(">II",w,h)+b"\x08\x06\x00\x00\x00"; c=b"IHDR"+ihdr
+    return b"\x89PNG\r\n\x1a\n"+_st.pack(">I",13)+c+_st.pack(">I",_zl.crc32(c))
+def _mkbundle(binname="antigravity-ide", icon=True, size=512):
+    d=_t2.mkdtemp()
+    b=_o2.path.join(d,binname); open(b,"w").write("#!/bin/sh\n"); _o2.chmod(b,0o755)
+    if icon:
+        p=_o2.path.join(d,"resources","app","resources","linux"); _o2.makedirs(p)
+        open(_o2.path.join(p,"code.png"),"wb").write(_png(size,size))
+    return d, b
+def t_render():
+    e = render_entry(name="Antigravity IDE", executable="/x/agy-ide",
+                     icon="antigravity-ide", comment="c", wm_class="Antigravity")
+    assert e.startswith("[Desktop Entry]")
+    assert "Exec=/x/agy-ide %F" in e
+    assert "[Desktop Action new-window]" in e
+    assert "--new-window" in e
+    assert e.endswith("\n")
+def t_icon_found():
+    d,_ = _mkbundle()
+    assert find_icon(d).endswith("code.png")
+def t_icon_absent():
+    d,_ = _mkbundle(icon=False)
+    assert find_icon(d) is None
+def t_install(tmpenv={}):
+    d,b = _mkbundle()
+    home=_t2.mkdtemp(); old=_o2.environ.get("XDG_DATA_HOME")
+    _o2.environ["XDG_DATA_HOME"]=home
+    try:
+        path = install_desktop_entry("ide", d, b, scope="user")
+        assert path and _o2.path.isfile(path), path
+        body=open(path).read()
+        assert f"Exec={b} %F" in body
+        assert _o2.path.isfile(_o2.path.join(home,"icons","hicolor","512x512","apps","antigravity-ide.png"))
+        assert "Icon=antigravity-ide\n" in body
+        assert remove_desktop_entry("ide", scope="user")
+        assert not _o2.path.exists(path)
+    finally:
+        if old is None: _o2.environ.pop("XDG_DATA_HOME",None)
+        else: _o2.environ["XDG_DATA_HOME"]=old
+def t_scope():
+    t = DesktopTarget.for_scope("system")
+    assert t.applications_dir.startswith("/usr/local/")
+def t_find_exe():
+    from agup.update import _find_executable
+    d,b = _mkbundle("antigravity")          # Debian-style name
+    assert _find_executable(d,"ide") == b   # still found for the IDE
+    d2,b2 = _mkbundle("antigravity-ide")
+    assert _find_executable(d2,"ide") == b2
+    assert _find_executable(_t2.mkdtemp(),"ide") is None
+check("entry body well formed", t_render)
+check("icon located in bundle", t_icon_found)
+check("missing icon tolerated", t_icon_absent)
+check("entry + icon installed and removable", t_install)
+def t_icon_1024():
+    # A 1024px icon must land in 1024x1024, not 512x512 -- mismatched
+    # dimensions make the theme lookup silently fail.
+    d,b = _mkbundle(size=1024)
+    home=_t2.mkdtemp(); old=_o2.environ.get("XDG_DATA_HOME"); _o2.environ["XDG_DATA_HOME"]=home
+    try:
+        path = install_desktop_entry("ide", d, b, scope="user")
+        assert _o2.path.isfile(_o2.path.join(home,"icons","hicolor","1024x1024","apps","antigravity-ide.png"))
+        assert not _o2.path.exists(_o2.path.join(home,"icons","hicolor","512x512","apps","antigravity-ide.png"))
+    finally:
+        if old is None: _o2.environ.pop("XDG_DATA_HOME",None)
+        else: _o2.environ["XDG_DATA_HOME"]=old
+def t_icon_odd_size():
+    # Non-standard size falls back to an absolute path in Icon=
+    d,b = _mkbundle(size=900)
+    home=_t2.mkdtemp(); old=_o2.environ.get("XDG_DATA_HOME"); _o2.environ["XDG_DATA_HOME"]=home
+    try:
+        path = install_desktop_entry("ide", d, b, scope="user")
+        body=open(path).read()
+        icon_line=[l for l in body.splitlines() if l.startswith("Icon=")][0]
+        assert icon_line.startswith("Icon=/"), icon_line
+        assert _o2.path.isfile(icon_line.split("=",1)[1])
+    finally:
+        if old is None: _o2.environ.pop("XDG_DATA_HOME",None)
+        else: _o2.environ["XDG_DATA_HOME"]=old
+def t_png_size():
+    from agup.desktop import read_png_size
+    d=_t2.mkdtemp(); p=_o2.path.join(d,"x.png"); open(p,"wb").write(_png(256,256))
+    assert read_png_size(p)==(256,256)
+    q=_o2.path.join(d,"bad.png"); open(q,"wb").write(b"not a png")
+    assert read_png_size(q) is None
+check("1024px icon goes to 1024x1024 dir", t_icon_1024)
+check("odd size falls back to absolute path", t_icon_odd_size)
+check("PNG header parsed, junk rejected", t_png_size)
+check("system scope uses /usr/local", t_scope)
+check("launcher found under either binary name", t_find_exe)
+
 print("progress bar")
 import io as _io
 from agup.fetch import ProgressBar, format_bytes, format_duration

@@ -163,6 +163,62 @@ agup --forget-pin ide:2.5.5     # allow a legitimate respin to re-pin
 
 Pins live in `~/.local/state/agup/pins.json`, mode 0600.
 
+## Application menu
+
+Installing a bundle also writes a `.desktop` entry and copies the bundle's icon
+into the icon theme, so it appears in your application menu -- Whisker, GNOME
+Activities, KDE Kickoff -- rather than only working from a shell. User-scope
+installs write to `~/.local/share/applications`, so no root is needed.
+
+The icon is placed in the theme directory matching its **actual pixel
+dimensions**, read from the PNG header. This matters: the icon theme spec
+matches on directory name, so a 1024x1024 icon copied into `512x512/apps`
+never resolves and the entry renders with no icon at all. Non-square or
+non-standard sizes fall back to an absolute path in `Icon=`, which always
+works.
+
+`update-desktop-database` and `gtk-update-icon-cache` are run afterwards, and
+XFCE's own menu cache is cleared, since Whisker keeps a cache the desktop
+database does not touch. A panel restart is occasionally still needed:
+
+```bash
+xfce4-panel -r
+```
+
+`--no-desktop` skips it.
+
+## Profile migration
+
+A major release can change `dataFolderName` in product.json. When it does, the
+new build starts against an empty profile: settings, extensions and chat
+history all appear to be gone, while the old data sits untouched under its old
+name. Antigravity did exactly this between 1.23.2 (`.antigravity`,
+`~/.config/Antigravity`) and 2.5.5 (`.antigravity-ide`,
+`~/.config/Antigravity IDE`).
+
+`agup` detects a renamed profile after installing and says so:
+
+```
+  note: 2.5.5 uses a new profile directory (.antigravity-ide).
+        Your previous data is still at /home/you/.config/Antigravity (79 MB)
+        Nothing was copied. Re-run with --migrate-profile to carry it across.
+```
+
+```bash
+agup --ide --migrate-profile
+```
+
+That copies settings, chat history and workspace state, backs up the new
+profile first, and leaves the original entirely alone. Caches and Chromium
+scratch directories are skipped -- they are large and regenerate on launch.
+Extensions live in the data folder rather than the config directory and are
+re-downloadable, so they need `--migrate-extensions` as well.
+
+Note that a recursive copy done by hand tends to fail here: extension trees
+contain read-only directories, and preserving those modes means creating a
+directory you then cannot write into. The migration forces writable
+permissions on what it creates.
+
 ## Install paths
 
 Defaults are `~/opt` (user scope) and `/opt` (system scope). If your install
