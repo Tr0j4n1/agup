@@ -1,0 +1,29 @@
+# agup configuration — copy to ~/.config/agup/config.toml
+#
+# Every value here is overridden by the matching environment variable,
+# which is in turn overridden by the matching command-line flag.
+
+# Cloud Run project and region used to build default release-feed endpoints.
+project = "974169037036"
+region  = "us-central1"
+
+# Release feed overrides. Set these when the defaults are unreachable
+# or when you mirror releases internally.
+[endpoints]
+# ide = "https://mirror.internal/antigravity/ide/releases"
+# hub = "https://mirror.internal/antigravity/hub/releases"
+# cli = "https://mirror.internal/antigravity/cli/manifests"
+
+# Artifact URL templates. The IDE and Hub feeds return a version and an
+# execution id but no download URL, so the artifact location is built from
+# these. Placeholders: {version} {exec_id} {os} {arch}
+[artifacts]
+# ide = "https://edgedl.me.gvt1.com/edgedl/release2/j0qc3/antigravity/stable/{version}-{exec_id}/{os}-{arch}/Antigravity%20IDE.tar.gz"
+# hub = "https://storage.googleapis.com/antigravity-public/antigravity-hub/{version}-{exec_id}/{os}-{arch}/Antigravity.tar.gz"
+
+# Install path overrides. Use these when a component lives outside the
+# scope default -- for instance a distro package under /usr/share.
+[paths]
+# ide = "/usr/share/antigravity"
+# hub = "/opt/Antigravity"
+# cli = "/usr/local/bin/agy"
