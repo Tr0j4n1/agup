@@ -34,6 +34,7 @@ from .install import (
     link_command,
     read_binary_version,
     read_installed_version,
+    write_receipt,
     running_pids,
     swap_directory,
 )
@@ -245,6 +246,8 @@ def update_bundle(
         except InstallError as err:
             return Outcome.failed(component, str(err))
 
+    write_receipt(target, component, latest.version)
+
     binary = _find_executable(target, component)
     if binary is None:
         report(f"  warning: no launcher binary found under {target}")
@@ -316,6 +319,32 @@ def _check_profile(
     report(f"        original left untouched at {previous.config_dir}")
 
 
+#: Names the CLI binary has shipped under. The archive currently contains a
+#: single file called "antigravity"; earlier tooling assumed "agy".
+_CLI_NAMES = ("antigravity", "agy", "antigravity-cli")
+
+
+def _find_cli_binary(extract_dir: str) -> Optional[str]:
+    """Locate the CLI executable in an extracted archive.
+
+    Falls back to "the only executable file present" rather than failing on an
+    unrecognised name, since the archive is a single binary and guessing its
+    name wrong is how this broke before.
+    """
+    candidates: list[str] = []
+    for root, _dirs, files in os.walk(extract_dir):
+        for name in files:
+            path = os.path.join(root, name)
+            if name in _CLI_NAMES:
+                return path
+            if os.access(path, os.X_OK) and not os.path.islink(path):
+                candidates.append(path)
+
+    if len(candidates) == 1:
+        return candidates[0]
+    return None
+
+
 def update_cli(endpoints: Endpoints, options: Options, report: Reporter) -> Outcome:
     """Update the agy CLI binary."""
     paths = options.paths()
@@ -384,13 +413,17 @@ def update_cli(endpoints: Endpoints, options: Options, report: Reporter) -> Outc
         except InstallError as err:
             return Outcome.failed("cli", str(err))
 
-        binary = None
-        for root, _dirs, files in os.walk(extract_dir):
-            if "agy" in files:
-                binary = os.path.join(root, "agy")
-                break
+        binary = _find_cli_binary(extract_dir)
         if binary is None:
-            return Outcome.failed("cli", "archive contained no agy binary")
+            listing = sorted(
+                name
+                for _root, _dirs, files in os.walk(extract_dir)
+                for name in files
+            )[:10]
+            return Outcome.failed(
+                "cli",
+                f"archive contained no recognisable CLI binary; found {listing}",
+            )
 
         os.makedirs(os.path.dirname(target), exist_ok=True)
         try:

@@ -125,7 +125,7 @@ with tempfile.TemporaryDirectory() as d:
     check("store is 0600", t_perms)
 
 print("version detection (VS Code fork)")
-import json as _json, tempfile as _tf
+import json as _json, tempfile as _tf, tempfile as _t2, os as _o2
 def _bundle(**product):
     d=_tf.mkdtemp(); app=os.path.join(d,"resources","app"); os.makedirs(app)
     _json.dump({"version":"1.107.0"}, open(os.path.join(app,"package.json"),"w"))
@@ -156,9 +156,59 @@ check("falls back to package.json", t_no_product)
 check("absent path = 0.0.0", t_missing)
 check("product identity read", t_identity)
 check("path override applies to one component only", t_override)
+from agup.install import write_receipt, read_receipt
+def t_receipt_hub():
+    # The Hub is a plain Electron app: no package.json, no product.json, and
+    # app-update.yml carries only updater config. Without a receipt its
+    # version reads 0.0.0 forever and every run re-downloads 163 MB.
+    d=_t2.mkdtemp(); _o2.makedirs(_o2.path.join(d,"resources"))
+    open(_o2.path.join(d,"resources","app-update.yml"),"w").write("provider: generic\n")
+    assert read_installed_version(d)=="0.0.0"
+    assert write_receipt(d,"hub","2.11.0")
+    assert read_installed_version(d)=="2.11.0"
+def t_receipt_is_last():
+    # A stale receipt must never override what the bundle itself states.
+    d=_bundle(version="1.107.0", ideVersion="2.5.5")
+    write_receipt(d,"ide","0.0.1")
+    assert read_installed_version(d)=="2.5.5"
+def t_receipt_roundtrip():
+    d=_t2.mkdtemp(); write_receipt(d,"hub","2.11.0",sha256="ab"*32)
+    r=read_receipt(d)
+    assert r["component"]=="hub" and r["version"]=="2.11.0"
+    assert read_receipt(_t2.mkdtemp()) is None
+def t_receipt_corrupt():
+    from agup.install import RECEIPT_NAME
+    d=_t2.mkdtemp(); open(_o2.path.join(d,RECEIPT_NAME),"w").write("{not json")
+    assert read_receipt(d) is None
+    assert read_installed_version(d)=="0.0.0"
+check("receipt fixes Hub 0.0.0 reinstall loop", t_receipt_hub)
+check("bundle metadata beats stale receipt", t_receipt_is_last)
+check("receipt round-trips", t_receipt_roundtrip)
+check("corrupt receipt ignored", t_receipt_corrupt)
+def t_cli_binary_names():
+    from agup.update import _find_cli_binary
+    # The real archive contains a single file named "antigravity", not "agy".
+    for name in ("antigravity","agy","antigravity-cli"):
+        d=_t2.mkdtemp(); p=_o2.path.join(d,name)
+        open(p,"w").write("#!/bin/sh"); _o2.chmod(p,0o755)
+        assert _find_cli_binary(d)==p, name
+def t_cli_unknown_name():
+    from agup.update import _find_cli_binary
+    # Unknown name, single executable: take it rather than failing.
+    d=_t2.mkdtemp(); p=_o2.path.join(d,"ag-future-name")
+    open(p,"w").write("#!/bin/sh"); _o2.chmod(p,0o755)
+    assert _find_cli_binary(d)==p
+def t_cli_ambiguous():
+    from agup.update import _find_cli_binary
+    d=_t2.mkdtemp()
+    for n in ("one","two"):
+        p=_o2.path.join(d,n); open(p,"w").write("x"); _o2.chmod(p,0o755)
+    assert _find_cli_binary(d) is None, "ambiguous archive must not guess"
+check("CLI binary found under any known name", t_cli_binary_names)
+check("unknown name, lone executable taken", t_cli_unknown_name)
+check("ambiguous archive refuses to guess", t_cli_ambiguous)
 
 print("desktop entries")
-import tempfile as _t2, os as _o2
 from agup.desktop import (render_entry, install_desktop_entry, remove_desktop_entry,
                           find_icon, DesktopTarget)
 import struct as _st, zlib as _zl

@@ -1,7 +1,5 @@
 # agup
 
-[![tests](https://github.com/Tr0j4n1/agup/actions/workflows/tests.yml/badge.svg)](https://github.com/Tr0j4n1/agup/actions/workflows/tests.yml)
-
 Updater for Antigravity IDE, Hub and CLI.
 
 Google ships Antigravity through an apt repo that lags well behind the release
@@ -14,8 +12,8 @@ Not affiliated with Google.
 ## Install
 
 ```bash
-git clone https://github.com/Tr0j4n1/agup.git
-cd agup
+git clone <your-repo> ~/Tools/agup
+cd ~/Tools/agup
 pipx install .
 ```
 
@@ -251,7 +249,19 @@ with `--adopt-managed-path` if you know what you are taking on.
 
 ## Version detection
 
-Antigravity is a VS Code fork, so `package.json` and `product.json` both carry
+Not every component states its version in a file. The IDE is a VS Code fork
+with a `product.json`; the Hub is a plain Electron app with neither
+`package.json` nor `product.json`, and its `app-update.yml` holds only updater
+config. For those, `agup` writes a small `.agup-install.json` receipt into the
+install directory recording what it put there. Without it the Hub reads as
+"not installed" on every run and gets re-downloaded indefinitely.
+
+The receipt is consulted **last**, after any metadata the bundle itself
+carries, so an application that self-updates is never misreported from a stale
+file we wrote.
+
+
+For the IDE specifically: it is a VS Code fork, so `package.json` and `product.json` both carry
 a `version` field holding the *upstream Code* version. A build reporting
 1.107.0 there is Antigravity 1.23.2. Only `ideVersion` in `product.json` uses
 the numbering the release feed speaks, so it is consulted first -- reading

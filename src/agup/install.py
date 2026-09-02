@@ -59,6 +59,40 @@ class Paths:
         return {"ide": self.ide_dir, "hub": self.hub_dir, "cli": self.cli_bin}[component]
 
 
+#: Receipt written into an install directory recording what we put there.
+#: Needed because not every component carries its version in a readable file:
+#: the Hub is a plain Electron app with no package.json or product.json, and
+#: its app-update.yml holds only updater config. Without a receipt its version
+#: reads as "not installed" forever and every run re-downloads it.
+RECEIPT_NAME = ".agup-install.json"
+
+
+def write_receipt(install_dir: str, component: str, version: str, sha256: str = "") -> bool:
+    """Record what was installed, for components with no readable version."""
+    payload = {
+        "component": component,
+        "version": version,
+        "sha256": sha256,
+        "written_by": "agup",
+    }
+    try:
+        with open(os.path.join(install_dir, RECEIPT_NAME), "w", encoding="utf-8") as fdesc:
+            json.dump(payload, fdesc, indent=2)
+        return True
+    except OSError:
+        return False
+
+
+def read_receipt(install_dir: str) -> Optional[dict]:
+    """Read a previously written receipt, if present and valid."""
+    try:
+        with open(os.path.join(install_dir, RECEIPT_NAME), "r", encoding="utf-8") as fdesc:
+            data = json.load(fdesc)
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 #: Where a version might live, in decreasing order of trust.
 #:
 #: Antigravity is a VS Code fork, so ``package.json`` and ``product.json``
@@ -92,6 +126,15 @@ def read_installed_version(target: str) -> str:
         except (OSError, json.JSONDecodeError):
             continue
         value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    # Nothing in the bundle states a version. Fall back to our own receipt,
+    # which is last on purpose: a file the application itself maintains beats
+    # one we wrote, since the app may have self-updated since we installed it.
+    receipt = read_receipt(target)
+    if receipt:
+        value = receipt.get("version")
         if isinstance(value, str) and value.strip():
             return value.strip()
 
