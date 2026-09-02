@@ -12,8 +12,8 @@ Not affiliated with Google.
 ## Install
 
 ```bash
-git clone <your-repo> ~/Tools/agup
-cd ~/Tools/agup
+git clone <your-repo> ~/agup
+cd ~/agup
 pipx install .
 ```
 
