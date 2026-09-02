@@ -12,7 +12,7 @@ Not affiliated with Google.
 ## Install
 
 ```bash
-git clone <your-repo> ~/agup
+git clone https://github.com/Tr0j4n1/agup.git ~/agup
 cd ~/agup
 pipx install .
 ```
