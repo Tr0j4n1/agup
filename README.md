@@ -1,5 +1,7 @@
 # agup
 
+[![tests](https://github.com/Tr0j4n1/agup/actions/workflows/tests.yml/badge.svg)](https://github.com/Tr0j4n1/agup/actions/workflows/tests.yml)
+
 Updater for Antigravity IDE, Hub and CLI.
 
 Google ships Antigravity through an apt repo that lags well behind the release
