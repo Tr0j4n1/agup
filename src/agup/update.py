@@ -260,11 +260,16 @@ def update_bundle(
                 report(f"  warning: {err}")
 
         if options.desktop:
-            entry = install_desktop_entry(
+            entry, icon = install_desktop_entry(
                 component, target, binary, scope=options.scope, version=latest.version
             )
             if entry:
                 report(f"  menu entry: {entry}")
+                if not icon:
+                    report(
+                        "  warning: no icon found in the bundle; the menu entry "
+                        "will show a generic icon"
+                    )
             else:
                 report("  warning: could not write a desktop entry")
 

@@ -241,8 +241,9 @@ def t_install(tmpenv={}):
     home=_t2.mkdtemp(); old=_o2.environ.get("XDG_DATA_HOME")
     _o2.environ["XDG_DATA_HOME"]=home
     try:
-        path = install_desktop_entry("ide", d, b, scope="user")
+        path, has_icon = install_desktop_entry("ide", d, b, scope="user")
         assert path and _o2.path.isfile(path), path
+        assert has_icon
         body=open(path).read()
         assert f"Exec={b} %F" in body
         assert _o2.path.isfile(_o2.path.join(home,"icons","hicolor","512x512","apps","antigravity-ide.png"))
@@ -272,7 +273,8 @@ def t_icon_1024():
     d,b = _mkbundle(size=1024)
     home=_t2.mkdtemp(); old=_o2.environ.get("XDG_DATA_HOME"); _o2.environ["XDG_DATA_HOME"]=home
     try:
-        path = install_desktop_entry("ide", d, b, scope="user")
+        path, has_icon = install_desktop_entry("ide", d, b, scope="user")
+        assert has_icon
         assert _o2.path.isfile(_o2.path.join(home,"icons","hicolor","1024x1024","apps","antigravity-ide.png"))
         assert not _o2.path.exists(_o2.path.join(home,"icons","hicolor","512x512","apps","antigravity-ide.png"))
     finally:
@@ -283,7 +285,7 @@ def t_icon_odd_size():
     d,b = _mkbundle(size=900)
     home=_t2.mkdtemp(); old=_o2.environ.get("XDG_DATA_HOME"); _o2.environ["XDG_DATA_HOME"]=home
     try:
-        path = install_desktop_entry("ide", d, b, scope="user")
+        path, _has = install_desktop_entry("ide", d, b, scope="user")
         body=open(path).read()
         icon_line=[l for l in body.splitlines() if l.startswith("Icon=")][0]
         assert icon_line.startswith("Icon=/"), icon_line
@@ -300,6 +302,61 @@ def t_png_size():
 check("1024px icon goes to 1024x1024 dir", t_icon_1024)
 check("odd size falls back to absolute path", t_icon_odd_size)
 check("PNG header parsed, junk rejected", t_png_size)
+def _mkasar(path, files):
+    import struct as _s
+    blobs=b""; tree={"files":{}}
+    for name,data in files.items():
+        parts=name.split("/"); node=tree
+        for part in parts[:-1]: node=node["files"].setdefault(part,{"files":{}})
+        node["files"][parts[-1]]={"size":len(data),"offset":str(len(blobs))}; blobs+=data
+    j=_json.dumps(tree).encode(); pad=(4-len(j)%4)%4
+    jp=4+len(j)+pad; hs=4+jp
+    with open(path,"wb") as f:
+        f.write(_s.pack("<I",4)); f.write(_s.pack("<I",hs)); f.write(_s.pack("<I",jp))
+        f.write(_s.pack("<I",len(j))); f.write(j); f.write(b"\x00"*pad); f.write(blobs)
+def t_asar_header():
+    from agup.desktop import _asar_header, _asar_walk
+    d=_t2.mkdtemp(); a=_o2.path.join(d,"app.asar")
+    _mkasar(a, {"main.js":b"x"*50, "build/icon.png":_png(512,512)})
+    h=_asar_header(a); assert h is not None, "header offsets wrong"
+    assert len(_asar_walk(h[0]))==2
+def t_asar_icon():
+    from agup.desktop import extract_asar_icon
+    d=_t2.mkdtemp(); a=_o2.path.join(d,"app.asar")
+    # Mirrors the real Hub archive: one big icon.png plus small tray assets.
+    _mkasar(a, {"icon.png":_png(512,512)+b"\x00"*48000,
+                "trayTemplate.png":_png(22,22), "trayTemplate@2x.png":_png(44,44)})
+    out=_o2.path.join(d,"out.png")
+    r=extract_asar_icon(a,out)
+    assert r and read_png_size(r)==(512,512), r
+def t_asar_hub_layout():
+    # Hub install: no loose PNG anywhere, only resources/app.asar
+    d=_t2.mkdtemp(); _o2.makedirs(_o2.path.join(d,"resources"))
+    _mkasar(_o2.path.join(d,"resources","app.asar"), {"icon.png":_png(512,512)})
+    f=find_icon(d)
+    assert f and read_png_size(f)==(512,512), f
+def t_asar_garbage():
+    from agup.desktop import _asar_header, extract_asar_icon
+    d=_t2.mkdtemp(); b=_o2.path.join(d,"bad.asar"); open(b,"wb").write(b"nonsense"*20)
+    assert _asar_header(b) is None
+    assert extract_asar_icon(b, _o2.path.join(d,"x.png")) is None
+def t_no_icon_reported():
+    # A bundle with no icon at all must report icon_installed=False rather
+    # than writing a dangling Icon= that silently renders blank.
+    d,b=_mkbundle(icon=False)
+    home=_t2.mkdtemp(); old=_o2.environ.get("XDG_DATA_HOME"); _o2.environ["XDG_DATA_HOME"]=home
+    try:
+        path, has_icon = install_desktop_entry("ide", d, b, scope="user")
+        assert path and not has_icon
+    finally:
+        if old is None: _o2.environ.pop("XDG_DATA_HOME",None)
+        else: _o2.environ["XDG_DATA_HOME"]=old
+from agup.desktop import read_png_size
+check("asar header offsets correct", t_asar_header)
+check("icon extracted from asar", t_asar_icon)
+check("Hub layout: icon found inside app.asar", t_asar_hub_layout)
+check("garbage asar rejected", t_asar_garbage)
+check("missing icon is reported, not hidden", t_no_icon_reported)
 check("system scope uses /usr/local", t_scope)
 check("launcher found under either binary name", t_find_exe)
 

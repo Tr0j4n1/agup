@@ -7,6 +7,7 @@ to the XDG user data directory so no root is needed for user-scope installs.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess  # nosec B404 - fixed argv, no shell
@@ -78,6 +79,14 @@ def find_icon(install_dir: str) -> Optional[str]:
         for name in files:
             if name in ("code.png", "icon.png", "antigravity.png"):
                 return os.path.join(root, name)
+
+    # Plain Electron apps ship no loose icon; it lives inside app.asar.
+    asar = os.path.join(install_dir, "resources", "app.asar")
+    if os.path.isfile(asar):
+        cache = os.path.join(install_dir, ".agup-icon.png")
+        if os.path.isfile(cache):
+            return cache
+        return extract_asar_icon(asar, cache)
     return None
 
 
@@ -225,19 +234,25 @@ def install_desktop_entry(
     *,
     scope: str = "user",
     version: str = "",
-) -> Optional[str]:
-    """Write a .desktop entry for a component. Returns the path written."""
+) -> tuple[Optional[str], bool]:
+    """Write a .desktop entry for a component.
+
+    Returns (entry_path, icon_installed). The second value matters: writing
+    ``Icon=antigravity`` when no such icon exists produces an entry that looks
+    fine on disk and renders blank, with nothing said about it.
+    """
     spec = {
         "ide": ("Antigravity IDE", "antigravity-ide", "Antigravity", "AI-native code editor"),
         "hub": ("Antigravity", "antigravity", "Antigravity", "Antigravity"),
     }.get(component)
     if spec is None:
-        return None
+        return None, False
 
     name, slug, wm_class, comment = spec
     target = DesktopTarget.for_scope(scope)
 
-    icon = install_icon(install_dir, slug, target) or slug
+    installed_icon = install_icon(install_dir, slug, target)
+    icon = installed_icon or slug
     body = render_entry(
         name=name,
         executable=executable,
@@ -253,10 +268,10 @@ def install_desktop_entry(
             fdesc.write(body)
         os.chmod(path, 0o644)
     except OSError:
-        return None
+        return None, bool(installed_icon)
 
     refresh_menu(target)
-    return path
+    return path, bool(installed_icon)
 
 
 def remove_desktop_entry(component: str, *, scope: str = "user") -> bool:
@@ -283,3 +298,110 @@ def remove_desktop_entry(component: str, *, scope: str = "user") -> bool:
     if removed:
         refresh_menu(target)
     return removed
+
+
+# --- asar archive reading ---------------------------------------------------
+#
+# Electron apps that are not VS Code forks keep no loose icon on disk; the
+# Antigravity Hub ships nothing but app.asar under resources/. asar is a plain
+# container -- a length-prefixed JSON directory followed by concatenated file
+# bodies -- so the icon can be pulled out without Node or any dependency.
+
+_ASAR_ICON_NAMES = ("icon.png", "logo.png", "app.png", "tray.png", "icon@2x.png")
+
+
+def _asar_header(path: str) -> Optional[tuple[dict, int]]:
+    """Return (directory, data_offset) for an asar archive.
+
+    The header is a Chromium Pickle holding a JSON directory, laid out as four
+    little-endian uint32 fields before the JSON itself::
+
+        @0   4            pickle size of the next field
+        @4   header_size  size of the header block
+        @8   json_pickle  size of the JSON pickle
+        @12  json_len     length of the JSON string
+        @16  ...          the JSON directory
+
+    File bodies begin at ``8 + header_size``. Reading json_len from the wrong
+    field yields a truncated slice and a JSON decode error, which is how this
+    first went wrong.
+    """
+    try:
+        with open(path, "rb") as fdesc:
+            prefix = fdesc.read(16)
+            if len(prefix) < 16:
+                return None
+            header_size = int.from_bytes(prefix[4:8], "little")
+            json_len = int.from_bytes(prefix[12:16], "little")
+            if not 0 < json_len <= header_size < 256 * 1024 * 1024:
+                return None
+            raw = fdesc.read(json_len)
+            if len(raw) < json_len:
+                return None
+            directory = json.loads(raw.decode("utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(directory, dict) or "files" not in directory:
+        return None
+    return directory, 8 + header_size
+
+
+def _asar_walk(node: dict, prefix: str = "") -> list[tuple[str, dict]]:
+    """Flatten an asar directory tree into (path, entry) pairs."""
+    found: list[tuple[str, dict]] = []
+    files = node.get("files")
+    if not isinstance(files, dict):
+        return found
+    for name, entry in files.items():
+        if not isinstance(entry, dict):
+            continue
+        full = f"{prefix}/{name}" if prefix else name
+        if "files" in entry:
+            found.extend(_asar_walk(entry, full))
+        else:
+            found.append((full, entry))
+    return found
+
+
+def extract_asar_icon(asar_path: str, destination: str) -> Optional[str]:
+    """Pull the most icon-like PNG out of an asar archive.
+
+    Prefers conventional icon filenames, then falls back to the largest PNG in
+    the archive, which in practice is the application icon.
+    """
+    parsed = _asar_header(asar_path)
+    if parsed is None:
+        return None
+    directory, data_offset = parsed
+
+    pngs = [
+        (path, entry)
+        for path, entry in _asar_walk(directory)
+        if path.lower().endswith(".png")
+        and isinstance(entry.get("size"), int)
+        and entry.get("offset") is not None
+    ]
+    if not pngs:
+        return None
+
+    def rank(item: tuple[str, dict]) -> tuple[int, int]:
+        path, entry = item
+        name = os.path.basename(path).lower()
+        named = len(_ASAR_ICON_NAMES) - _ASAR_ICON_NAMES.index(name) if name in _ASAR_ICON_NAMES else 0
+        return (named, entry["size"])
+
+    path, entry = max(pngs, key=rank)
+
+    try:
+        offset = data_offset + int(entry["offset"])
+        with open(asar_path, "rb") as fdesc:
+            fdesc.seek(offset)
+            blob = fdesc.read(int(entry["size"]))
+        if not blob.startswith(b"\x89PNG\r\n\x1a\n"):
+            return None
+        os.makedirs(os.path.dirname(destination), exist_ok=True)
+        with open(destination, "wb") as fdesc:
+            fdesc.write(blob)
+    except (OSError, ValueError, KeyError):
+        return None
+    return destination

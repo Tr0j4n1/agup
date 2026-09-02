@@ -172,6 +172,16 @@ into the icon theme, so it appears in your application menu -- Whisker, GNOME
 Activities, KDE Kickoff -- rather than only working from a shell. User-scope
 installs write to `~/.local/share/applications`, so no root is needed.
 
+Not every bundle ships a loose icon. VS Code forks keep one under
+`resources/app/resources/linux/`; a plain Electron app like the Hub ships
+nothing but `resources/app.asar` with the icon inside it. `agup` reads the
+asar directly -- it is a length-prefixed JSON directory followed by
+concatenated file bodies, so no Node or extra dependency is needed -- and
+pulls out the best icon candidate.
+
+If no icon can be found at all, that is reported rather than passed over: an
+entry with a dangling `Icon=` looks fine on disk and renders blank.
+
 The icon is placed in the theme directory matching its **actual pixel
 dimensions**, read from the PNG header. This matters: the icon theme spec
 matches on directory name, so a 1024x1024 icon copied into `512x512/apps`
