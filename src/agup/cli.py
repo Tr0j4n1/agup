@@ -12,6 +12,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
     tomllib = None  # type: ignore[assignment]
 
+from . import fetch
 from .endpoints import COMPONENTS, ConfigError, Endpoints
 from .integrity import PinStore
 from .outcome import EXIT_USAGE, RunReport, Status
@@ -25,6 +26,15 @@ _MARK = {
     Status.SKIPPED: "~",
     Status.FAILED: "!",
 }
+
+
+_DNS_HELP = """
+Resolution failed both through your system resolver and over DNS-over-HTTPS.
+The network is likely blocking more than DNS. If you mirror the releases,
+point agup at your mirror:
+
+  AGUP_IDE_ENDPOINT=https://your-mirror/releases agup
+""".rstrip()
 
 
 def default_config_path() -> str:
@@ -131,6 +141,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="permit a plain-HTTP endpoint (local mirrors only)",
     )
+    net.add_argument(
+        "--no-doh",
+        action="store_true",
+        help="never fall back to DNS-over-HTTPS when system resolution fails",
+    )
+    net.add_argument(
+        "--doh-only",
+        action="store_true",
+        help="skip the system resolver entirely (faster on a network known to filter)",
+    )
     net.add_argument("--show-endpoints", action="store_true", help="print endpoints and exit")
 
     parser.add_argument("--config", metavar="PATH", help="TOML config file")
@@ -162,6 +182,21 @@ def main(argv: Optional[list[str]] = None) -> int:
     except ConfigError as err:
         print(f"agup: {err}", file=sys.stderr)
         return EXIT_USAGE
+
+    def _announce(hostname: str, address: str) -> None:
+        if not args.quiet:
+            print(
+                f"  note: system DNS could not resolve {hostname}; "
+                f"resolved over DNS-over-HTTPS to {address}",
+                file=sys.stderr,
+            )
+
+    doh_off = args.no_doh or config.get("doh") is False
+    fetch.configure_dns(
+        enabled=not doh_off,
+        always=args.doh_only or bool(config.get("doh_only")),
+        on_fallback=_announce,
+    )
 
     store = PinStore(args.pin_store)
 
@@ -221,7 +256,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         migrate_extensions=args.migrate_extensions,
     )
 
-    report(f"agup {__version__} — scope {args.scope}" + (" — dry run" if args.dry_run else ""))
+    report(
+        f"agup {__version__} — scope {args.scope}"
+        + (" — dry run" if args.dry_run else "")
+        + (" — DoH only" if args.doh_only else "")
+    )
 
     run = RunReport()
     for component in selected:
@@ -235,6 +274,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     for outcome in run.outcomes:
         print(f"{_MARK[outcome.status]} {outcome.component:4} {outcome.detail}")
     print(f"\n{run.summary_line()}")
+
+    if run.all_dns_failures:
+        print(_DNS_HELP, file=sys.stderr)
 
     return run.exit_code()
 

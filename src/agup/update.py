@@ -22,7 +22,7 @@ from .migrate import (
     read_data_folder_name,
 )
 from .endpoints import ConfigError, Endpoints
-from .fetch import FetchError, ProgressBar, download, get_json
+from .fetch import FetchError, ProgressBar, ResolutionError, download, get_json
 from .install import (
     InstallError,
     is_dpkg_owned,
@@ -184,6 +184,8 @@ def update_bundle(
 
     try:
         releases = _fetch_releases(endpoints.for_component(component))
+    except ResolutionError as err:
+        return Outcome.failed(component, str(err), dns=True)
     except FetchError as err:
         return Outcome.failed(component, str(err))
 
@@ -358,6 +360,8 @@ def update_cli(endpoints: Endpoints, options: Options, report: Reporter) -> Outc
 
     try:
         payload = get_json(manifest_url)
+    except ResolutionError as err:
+        return Outcome.failed("cli", str(err), dns=True)
     except FetchError as err:
         return Outcome.failed("cli", str(err))
 

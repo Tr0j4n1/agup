@@ -9,21 +9,54 @@ from __future__ import annotations
 
 import json
 import random
+import socket
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Callable, Optional
 
 from .endpoints import is_trusted_download
+from .resolver import ResolverError, build_opener
 
 USER_AGENT = "agup"
+
+#: Opener used for all requests. By default it resolves normally and falls
+#: back to DoH only for names the system resolver cannot resolve, so a working
+#: resolver is never bypassed.
+_opener: Optional[urllib.request.OpenerDirector] = None
+
+
+def configure_dns(*, enabled: bool = True, always: bool = False, on_fallback=None) -> None:
+    """Set up name resolution.
+
+    enabled=False disables DoH entirely. always=True skips the system resolver,
+    which avoids waiting out its timeout on a network known to filter.
+    """
+    global _opener
+    _opener = build_opener(on_fallback, always) if enabled else None
+
+
+def doh_enabled() -> bool:
+    return _opener is not None
 DEFAULT_MAX_BYTES = 2 * 1024 * 1024 * 1024
 _RETRYABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
 
 
 class FetchError(Exception):
     """Raised when a resource cannot be retrieved."""
+
+
+class ResolutionError(FetchError):
+    """Raised when a hostname could not be resolved at all.
+
+    Kept distinct from a connection failure because the causes and the fixes
+    are entirely different. A name that does not resolve is nearly always
+    local -- a filtering resolver, a broken stub, a VM NAT resolver -- while a
+    refused or timed-out connection points at the service or the route to it.
+    Reporting both as "cannot reach" sends people to check the wrong thing.
+    """
 
 
 class UntrustedDownloadError(FetchError):
@@ -34,8 +67,31 @@ def _backoff(attempt: int) -> float:
     return min(0.5 * (2**attempt) + random.uniform(0.05, 0.25), 5.0)
 
 
+def _is_resolution_failure(err: BaseException) -> bool:
+    """Whether an exception indicates DNS resolution failed.
+
+    urllib wraps the original error in URLError, so the underlying
+    socket.gaierror has to be unwrapped. EAI_NONAME (-2) and EAI_AGAIN (-3)
+    are the resolver's way of saying the name produced no answer.
+    """
+    seen = set()
+    current: Optional[BaseException] = err
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, socket.gaierror):
+            return True
+        reason = getattr(current, "reason", None)
+        if isinstance(reason, BaseException):
+            current = reason
+            continue
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def _request(url: str, timeout: int):
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    if _opener is not None:
+        return _opener.open(req, timeout=timeout)
     return urllib.request.urlopen(req, timeout=timeout)  # nosec B310 - scheme validated upstream
 
 
@@ -54,11 +110,17 @@ def get_json(url: str, *, timeout: int = 15, retries: int = 3) -> Any:
             raise FetchError(f"{url} returned HTTP {err.code}") from err
         except (urllib.error.URLError, TimeoutError, OSError) as err:
             last = err
+            if _is_resolution_failure(err):
+                # Retrying will not make a name resolve; fail immediately.
+                host = urllib.parse.urlparse(url).hostname or url
+                raise ResolutionError(f"Cannot resolve {host}") from err
             if attempt < retries:
                 time.sleep(_backoff(attempt))
                 continue
             reason = getattr(err, "reason", err)
             raise FetchError(f"Cannot reach {url}: {reason}") from err
+        except ResolverError as err:
+            raise ResolutionError(str(err)) from err
         except (json.JSONDecodeError, UnicodeDecodeError) as err:
             raise FetchError(f"{url} did not return valid JSON") from err
     raise FetchError(f"Failed to fetch {url}: {last}")
@@ -253,11 +315,18 @@ def download(
             last = err
             if progress is not None:
                 progress.abort()
+            if _is_resolution_failure(err):
+                host = urllib.parse.urlparse(url).hostname or url
+                raise ResolutionError(f"Cannot resolve {host}") from err
             if attempt < retries:
                 time.sleep(_backoff(attempt))
                 progress = progress.restart() if progress is not None else None
                 continue
             raise FetchError(f"Download of {url} failed: {getattr(err, 'reason', err)}") from err
+        except ResolverError as err:
+            if progress is not None:
+                progress.abort()
+            raise ResolutionError(str(err)) from err
         except OSError as err:
             if progress is not None:
                 progress.abort()

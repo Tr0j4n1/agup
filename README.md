@@ -1,7 +1,5 @@
 # agup
 
-[![tests](https://github.com/Tr0j4n1/agup/actions/workflows/tests.yml/badge.svg)](https://github.com/Tr0j4n1/agup/actions/workflows/tests.yml)
-
 Updater for Antigravity IDE, Hub and CLI.
 
 Google ships Antigravity through an apt repo that lags well behind the release
@@ -14,8 +12,8 @@ Not affiliated with Google.
 ## Install
 
 ```bash
-git clone https://github.com/Tr0j4n1/agup.git ~/agup
-cd ~/agup
+git clone <your-repo> ~/Tools/agup
+cd ~/Tools/agup
 pipx install .
 ```
 
@@ -126,13 +124,57 @@ The CLI manifest carries a URL directly and needs no template.
 
 `agup --show-endpoints` prints both the feeds and the templates.
 
-This matters more than it sounds. Those defaults are Cloud Run hostnames under
-`run.app`, which appears on several DNS blocklists and is filtered outright by
-some consumer routers. When resolution fails there is otherwise no recourse
-short of editing installed source.
-
 Plain HTTP endpoints are refused unless you pass `--allow-insecure-endpoint`,
 which exists for local mirrors and nothing else.
+
+## Filtered resolvers
+
+The endpoints are `*.run.app` Cloud Run hostnames. Anyone can stand up a
+service on that domain in seconds, so it attracts abuse and lands on DNS
+blocklists -- consumer routers, Pi-hole, corporate DNS and VM NAT resolvers
+all drop it. The name is fine; the resolver refuses to say so.
+
+When the system resolver cannot resolve an endpoint, `agup` retries the lookup
+over DNS-over-HTTPS and says so:
+
+```
+  note: system DNS could not resolve antigravity-ide-...run.app;
+        resolved over DNS-over-HTTPS to 34.143.76.2
+```
+
+Nothing to configure. It queries `https://1.1.1.1/dns-query`, falling back to
+`9.9.9.9`, both addressed by IP so no bootstrap lookup is needed -- resolving
+the resolver's own name would hit the very problem being routed around.
+
+The system resolver stays in charge whenever it works. DoH handles only names
+it fails to resolve entirely, so a resolver configured deliberately still
+decides, and you are told the one time it did not.
+
+**TLS is not weakened.** The socket connects to the address DoH returned, but
+SNI and certificate validation still use the real hostname, so a wrong or
+hostile answer fails verification exactly as it would have. `tests/test_doh.py`
+asserts this -- including that a certificate valid for the wrong name is
+rejected -- and warns rather than passing if run behind a TLS-inspecting proxy
+where the result would be meaningless.
+
+`--doh-only` skips the system resolver entirely, which is faster on a network
+known to filter: otherwise you wait out its timeout first, which can be 15
+seconds or more per name. `--no-doh` disables the fallback.
+
+## Troubleshooting
+
+**"Cannot resolve ..." on every component, even with DoH.** The network is
+blocking more than DNS -- the addresses themselves, or HTTPS to public
+resolvers. Check whether DoH reaches anything at all:
+
+```bash
+curl -s -H 'accept: application/dns-json' \
+  'https://1.1.1.1/dns-query?name=example.com&type=A'
+```
+
+**`agup: command not found` after installing.** pipx installs to
+`~/.local/bin`, which is not on `PATH` on a fresh system. Run `pipx ensurepath`
+and open a new shell.
 
 ## Integrity
 
@@ -272,9 +314,9 @@ The receipt is consulted **last**, after any metadata the bundle itself
 carries, so an application that self-updates is never misreported from a stale
 file we wrote.
 
-
-For the IDE specifically: it is a VS Code fork, so `package.json` and `product.json` both carry
-a `version` field holding the *upstream Code* version. A build reporting
+For the IDE specifically: it is a VS Code fork, so `package.json` and
+`product.json` both carry a `version` field holding the *upstream Code*
+version. A build reporting
 1.107.0 there is Antigravity 1.23.2. Only `ideVersion` in `product.json` uses
 the numbering the release feed speaks, so it is consulted first -- reading
 `version` instead compares against an entirely different lineage and every
@@ -297,13 +339,18 @@ application name gets counted as the running application.
 ## Tests
 
 ```bash
-python3 tests/test_core.py    # units
-python3 tests/test_e2e.py     # full pipeline against a mock release server
+python3 tests/test_core.py      # units: versions, integrity, paths, desktop entries
+python3 tests/test_e2e.py       # full pipeline against a mock release server
+python3 tests/test_migrate.py   # profile migration across a data-folder rename
+python3 tests/test_doh.py       # DoH resolution and TLS validation
 ```
 
 The end-to-end suite stands up a local HTTP server, serves synthetic bundles,
 and exercises install, upgrade, dry run, checksum mismatch, pin mismatch,
 strict mode, unreachable endpoints, and the skip paths.
+
+`test_doh.py` needs network access for its TLS checks and skips them cleanly
+without it.
 
 ## Licence
 

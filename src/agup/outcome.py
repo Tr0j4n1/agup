@@ -47,6 +47,8 @@ class Outcome:
     detail: str = ""
     from_version: Optional[str] = None
     to_version: Optional[str] = None
+    #: Set when the failure was a DNS resolution failure specifically.
+    dns: bool = False
 
     @classmethod
     def updated(cls, component: str, frm: str, to: str) -> "Outcome":
@@ -61,8 +63,8 @@ class Outcome:
         return cls(component, Status.SKIPPED, reason)
 
     @classmethod
-    def failed(cls, component: str, reason: str) -> "Outcome":
-        return cls(component, Status.FAILED, reason)
+    def failed(cls, component: str, reason: str, *, dns: bool = False) -> "Outcome":
+        return cls(component, Status.FAILED, reason, dns=dns)
 
 
 @dataclass
@@ -86,6 +88,19 @@ class RunReport:
     @property
     def changes(self) -> list[Outcome]:
         return [o for o in self.outcomes if o.status.is_change]
+
+    @property
+    def all_dns_failures(self) -> bool:
+        """Whether every attempted component failed to resolve its endpoint.
+
+        Three endpoints failing to resolve at once is not three outages -- it
+        is one local resolver. Saying so turns a confusing error into an
+        actionable one.
+        """
+        failures = self.failures
+        if not failures or len(failures) != len(self.outcomes):
+            return False
+        return all(o.dns for o in failures)
 
     def exit_code(self) -> int:
         """Map the run onto a process exit code.

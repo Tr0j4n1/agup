@@ -21,6 +21,7 @@ jobs:
           python3 tests/test_core.py
           python3 tests/test_e2e.py
           python3 tests/test_migrate.py
+          python3 tests/test_doh.py
       - name: Verify it installs
         run: |
           pip install .

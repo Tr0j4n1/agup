@@ -37,6 +37,48 @@ check("skip-only exits 2 (was 1 upstream)", t_exit_skip)
 check("failure outranks skip", t_exit_fail_wins)
 check("summary line", t_summary)
 
+print("dns diagnosis")
+import socket as _sock, urllib.error as _ue, time as _time
+from agup.fetch import ResolutionError, FetchError, _is_resolution_failure, get_json
+def t_unwrap():
+    g=_sock.gaierror(-2,"Name or service not known")
+    assert _is_resolution_failure(g)
+    assert _is_resolution_failure(_ue.URLError(g))          # urllib wraps it
+    assert not _is_resolution_failure(_ue.URLError(ConnectionRefusedError()))
+    assert not _is_resolution_failure(TimeoutError())
+def t_raises_resolution():
+    try:
+        get_json("https://agup-test-nonexistent-host.invalid/x"); assert False
+    except ResolutionError: pass
+def t_no_retry_on_dns():
+    # A name that will never resolve must not burn three backoff rounds.
+    t=_time.monotonic()
+    try: get_json("https://agup-test-nonexistent-host.invalid/x")
+    except ResolutionError: pass
+    assert _time.monotonic()-t < 2.0, "retried an unresolvable name"
+def t_all_dns_pattern():
+    r=RunReport()
+    for c in ("ide","hub","cli"): r.add(Outcome.failed(c,"Cannot resolve x",dns=True))
+    assert r.all_dns_failures, "should spot the local-DNS pattern"
+def t_mixed_not_dns():
+    # One real failure among DNS failures is not a local resolver problem.
+    r=RunReport()
+    r.add(Outcome.failed("ide","Cannot resolve x",dns=True))
+    r.add(Outcome.failed("hub","HTTP 500"))
+    assert not r.all_dns_failures
+def t_partial_not_dns():
+    # A DNS failure alongside a success is not a blanket resolver problem.
+    r=RunReport()
+    r.add(Outcome.failed("ide","Cannot resolve x",dns=True))
+    r.add(Outcome.current("cli","1.1.24"))
+    assert not r.all_dns_failures
+check("gaierror unwrapped through URLError", t_unwrap)
+check("unresolvable host raises ResolutionError", t_raises_resolution)
+check("no retry backoff on a DNS failure", t_no_retry_on_dns)
+check("all-DNS failure pattern detected", t_all_dns_pattern)
+check("mixed failures are not diagnosed as DNS", t_mixed_not_dns)
+check("partial success is not diagnosed as DNS", t_partial_not_dns)
+
 print("endpoints")
 def t_default():
     e = Endpoints.resolve(env={})
